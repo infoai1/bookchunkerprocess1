@@ -3,6 +3,7 @@ import config
 from improvement5 import enrich_chapters_chunks
 from improvement4 import generate_chunk_embeddings
 
+
 st.set_page_config(page_title="Chapter & Chunk Enricher", layout="wide")
 st.title("📑 Chapter & Chunk Enricher")
 
