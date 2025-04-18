@@ -1,104 +1,59 @@
-# improvement5.py
-
-import pandas as pd
-import requests
-import json
 import streamlit as st
+import config
+from improvement5 import enrich_chapters_chunks
+from improvement4 import generate_chunk_embeddings
 
-def run_improvement5(uploaded_file, model_name: str, api_url: str, api_key: str, headers: dict):
-    """
-    uploaded_file: the Streamlit uploader return
-    model_name, api_url, api_key, headers: from app.py
-    Returns: enriched DataFrame or None
-    """
-    if uploaded_file is None:
-        return None
+st.set_page_config(page_title="Chapter & Chunk Enricher", layout="wide")
+st.title("📑 Chapter & Chunk Enricher")
 
-    # Load CSV
-    try:
-        df = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"❌ Failed to read uploaded CSV: {e}")
-        return None
+# 1) API Key
+api_key = st.text_input("🔑 Paste your API Key", type="password")
+if not api_key:
+    st.warning("API Key required to proceed.")
+    st.stop()
 
-    # Prepare new columns
-    for col in [
-        "ChapterSummary","ChapterOutline","ChapterQuestions",
-        "Wisdom","Reflections","ChunkOutline","ChunkQuestions"
-    ]:
-        df[col] = ""
+# 2) Model selections
+CHAT_MODELS = {
+    "DeepSeek Reasoner": (config.DEEPSEEK_MODEL, config.DEEPSEEK_API_URL),
+    "OpenAI GPT":        (config.MODEL_NAME,    config.API_URL),
+    "Anthropic Claude":  (config.ANTHROPIC_MODEL, config.ANTHROPIC_API_URL),
+    "Google Gemini Pro": (config.GEMINI_MODEL,  config.GEMINI_API_URL),
+}
+EMBED_MODELS = {
+    "Small Embedding": (config.EMBEDDING_MODEL, config.EMBEDDING_API_URL),
+}
 
-    # Chapter‐level enrichment
-    for title in df["Detected Title"].dropna().unique():
-        prompt = (
-            f"Summarize chapter '{title}' in 50 words; "
-            "list 3–5 outline bullets; provide 2 contextual questions."
+chat_choice  = st.selectbox("🤖 Chat Model", list(CHAT_MODELS.keys()))
+embed_choice = st.selectbox("🔎 Embedding Model", list(EMBED_MODELS.keys()))
+
+st.markdown(f"**Chat:** {chat_choice}  \n**Embed:** {embed_choice}")
+
+chat_model, chat_url       = CHAT_MODELS[chat_choice]
+embed_model, embed_url     = EMBED_MODELS[embed_choice]
+
+# 3) Enrichment
+st.header("🚀 Enrich Chapters & Chunks")
+file1 = st.file_uploader("Upload CSV with 'Detected Title' & 'TEXT CHUNK'", key="step1")
+if file1 and st.button("Start Enrichment"):
+    df_enriched = enrich_chapters_chunks(file1, chat_model, chat_url, api_key)
+    if df_enriched is not None:
+        st.download_button(
+            "⬇️ Download Enriched CSV",
+            df_enriched.to_csv(index=False).encode("utf-8"),
+            file_name="enriched_chapters_chunks.csv",
+            mime="text/csv"
         )
-        try:
-            resp = requests.post(
-                api_url,
-                headers=headers,
-                json={
-                  "model": model_name,
-                  "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=60
-            )
-            data = resp.json()
-        except Exception as e:
-            st.error(f"❌ API request failed for chapter '{title}': {e}")
-            continue
 
-        if resp.status_code != 200 or "choices" not in data:
-            st.error(f"❌ API error for chapter '{title}': {data}")
-            continue
-
-        try:
-            result = json.loads(data["choices"][0]["message"]["content"])
-        except Exception as e:
-            st.error(f"❌ JSON parse error for chapter '{title}': {e}")
-            continue
-
-        mask = df["Detected Title"] == title
-        df.loc[mask, "ChapterSummary"]   = result.get("ChapterSummary", "")
-        df.loc[mask, "ChapterOutline"]   = json.dumps(result.get("ChapterOutline", []))
-        df.loc[mask, "ChapterQuestions"] = json.dumps(result.get("ChapterQuestions", []))
-
-    # Chunk‐level enrichment
-    for idx, row in df.iterrows():
-        chunk_text = row.get("TEXT CHUNK", "")
-        prompt = (
-            f"For this text chunk, generate Wisdom, Reflections, "
-            f"3–5 outline bullets, and 1 contextual question. Text: {chunk_text}"
+# 4) Embeddings
+st.markdown("---")
+st.header("🔗 Generate Chunk Embeddings")
+file2 = st.file_uploader("Upload enriched CSV", key="step2")
+if file2 and st.button("Generate Embeddings"):
+    df_emb = generate_chunk_embeddings(file2, embed_model, embed_url, api_key)
+    if df_emb is not None:
+        st.download_button(
+            "⬇️ Download Embeddings CSV",
+            df_emb.to_csv(index=False).encode("utf-8"),
+            file_name="chunks_with_embeddings.csv",
+            mime="text/csv"
         )
-        try:
-            resp = requests.post(
-                api_url,
-                headers=headers,
-                json={
-                  "model": model_name,
-                  "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=60
-            )
-            data = resp.json()
-        except Exception as e:
-            st.error(f"❌ API request failed for chunk at row {idx}: {e}")
-            continue
-
-        if resp.status_code != 200 or "choices" not in data:
-            st.error(f"❌ API error for chunk at row {idx}: {data}")
-            continue
-
-        try:
-            result = json.loads(data["choices"][0]["message"]["content"])
-        except Exception as e:
-            st.error(f"❌ JSON parse error for chunk at row {idx}: {e}")
-            continue
-
-        df.at[idx, "Wisdom"]         = result.get("Wisdom", "")
-        df.at[idx, "Reflections"]    = result.get("Reflections", "")
-        df.at[idx, "ChunkOutline"]   = json.dumps(result.get("ChunkOutline", []))
-        df.at[idx, "ChunkQuestions"] = json.dumps(result.get("ChunkQuestions", []))
-
-    return df
