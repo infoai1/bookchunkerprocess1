@@ -1,14 +1,30 @@
 import pandas as pd
 import openai
 import json
+import streamlit as st
 
-def run_improvement4(uploaded_file, embedding_model: str, embedding_api_url: str, api_key: str, headers: dict):
-    df = pd.read_csv(uploaded_file)
-    texts = df["TEXT CHUNK"].astype(str).tolist()
+def generate_chunk_embeddings(uploaded_file, embedding_model: str, embedding_api_url: str, api_key: str):
+    """
+    Reads enriched CSV, generates embeddings for TEXT CHUNK, returns DataFrame.
+    """
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as e:
+        st.error(f"Failed to read CSV for embeddings: {e}")
+        return None
+
+    if "TEXT CHUNK" not in df.columns:
+        st.error("Missing 'TEXT CHUNK' column")
+        return None
 
     openai.api_key = api_key
-    response = openai.Embedding.create(model=embedding_model, input=texts)
-    df["Embedding"] = [item["embedding"] for item in response.data]
-    df["Embedding"] = df["Embedding"].apply(json.dumps)
+    texts = df["TEXT CHUNK"].astype(str).tolist()
+    try:
+        resp = openai.Embedding.create(model=embedding_model, input=texts)
+    except Exception as e:
+        st.error(f"Embedding API error: {e}")
+        return None
 
+    df["Embedding"] = [item["embedding"] for item in resp.data]
+    df["Embedding"] = df["Embedding"].apply(json.dumps)
     return df
