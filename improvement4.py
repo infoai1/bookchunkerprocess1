@@ -3,28 +3,18 @@ import openai
 import json
 import streamlit as st
 
-def generate_chunk_embeddings(uploaded_file, embedding_model: str, embedding_api_url: str, api_key: str):
-    """
-    Reads enriched CSV, generates embeddings for TEXT CHUNK, returns DataFrame.
-    """
-    try:
-        df = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Failed to read CSV for embeddings: {e}")
+def generate_chunk_embeddings(uploaded_file, embedding_model, embedding_api_url, api_key):
+    if uploaded_file is None:
         return None
 
-    if "TEXT CHUNK" not in df.columns:
-        st.error("Missing 'TEXT CHUNK' column")
+    df = pd.read_csv(uploaded_file)
+    if "TEXT CHUNK" not in df:
+        st.error("Missing 'TEXT CHUNK'")
         return None
 
     openai.api_key = api_key
     texts = df["TEXT CHUNK"].astype(str).tolist()
-    try:
-        resp = openai.Embedding.create(model=embedding_model, input=texts)
-    except Exception as e:
-        st.error(f"Embedding API error: {e}")
-        return None
-
-    df["Embedding"] = [item["embedding"] for item in resp.data]
+    resp = openai.Embedding.create(model=embedding_model, input=texts)
+    df["Embedding"] = [e["embedding"] for e in resp.data]
     df["Embedding"] = df["Embedding"].apply(json.dumps)
     return df
