@@ -5,18 +5,20 @@ import json
 import streamlit as st
 import time
 import chardet # Library to detect encoding
+import re # Import regex for cleaning
 
 def run_improvement5(uploaded_file, model_name, api_url, api_key):
     """
     Reads uploaded_file (CSV), enriches by chapter & chunk, returns DataFrame.
-    Handles potential JSON decoding errors from the API and attempts common CSV encodings.
-    Uses correct column name casing based on user feedback.
+    Handles potential JSON decoding errors from the API, attempts common CSV encodings,
+    uses correct column name casing, and cleans potential markdown fences from API responses.
     """
     if uploaded_file is None:
         st.warning("⚠️ No file uploaded.")
         return None
 
     # 1) Load CSV with robust encoding detection and error handling
+    # ... (CSV reading code remains the same as the previous working version) ...
     df = None
     potential_encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
     detected_encoding = None
@@ -75,19 +77,15 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
          st.error(f"❌ Error during post-read NaN filling: {fill_e}")
          return None
 
-    # --- Check if necessary columns exist ---
-    # **** CHANGED HERE: Use the exact column names from your CSV ****
     required_columns = ["Detected Title", "Text Chunk"]
-    # ***************************************************************
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         st.error(f"❌ CSV file is missing the required column(s): {', '.join(missing_columns)}")
-        st.error(f"Detected columns are: {', '.join(df.columns)}") # Show detected columns for easier debugging
+        st.error(f"Detected columns are: {', '.join(df.columns)}")
         return None
-    # --- End Check ---
-
 
     # 2) Initialize new columns if they don't exist
+    # ... (Initialization code remains the same) ...
     new_cols = [
         "ChapterSummary", "ChapterOutline", "ChapterQuestions",
         "Wisdom", "Reflections", "ChunkOutline", "ChunkQuestions"
@@ -97,10 +95,10 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
             df[col] = ""
         df[col] = df[col].astype(str)
 
-
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     def _call_api(prompt: str) -> str:
+        # ... (API call logic remains the same) ...
         max_retries = 2
         retry_delay = 3 # seconds
         for attempt in range(max_retries):
@@ -160,12 +158,29 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
         return ""
 
 
+    # **** NEW FUNCTION: Clean Markdown Fences ****
+    def clean_json_string(raw_string: str) -> str:
+        """Removes optional markdown code fences (```json ... ``` or ``` ... ```)"""
+        # Pattern to find JSON content optionally wrapped in ```json ... ``` or ``` ... ```
+        # It captures the content inside the fences.
+        # Uses re.DOTALL so '.' matches newline characters as well.
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_string.strip(), re.DOTALL)
+        if match:
+            # If fences are found, return the captured JSON part
+            return match.group(1).strip()
+        else:
+            # If no fences are found, assume the string is already JSON (or invalid)
+            # and return it stripped of leading/trailing whitespace.
+            return raw_string.strip()
+    # *********************************************
+
+
     # --- Create a progress bar ---
-    # Ensure 'Detected Title' exists before using it for unique count
+    # ... (Progress bar setup remains the same) ...
     unique_titles_list = []
     if "Detected Title" in df.columns:
         unique_titles_list = df['Detected Title'].astype(str).dropna().unique()
-        unique_titles_list = [title for title in unique_titles_list if title] # Filter out empty strings
+        unique_titles_list = [title for title in unique_titles_list if title]
     else:
         st.warning("⚠️ 'Detected Title' column not found for chapter processing.")
 
@@ -173,18 +188,13 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
     progress_bar = st.progress(0)
     operations_done = 0
 
+
     st.info("ℹ️ Starting Chapter Enrichment...")
     # 3) Chapter‐level enrichment
-    for title in unique_titles_list: # Use the pre-filtered list
-        # Ensure 'Detected Title' exists before masking
-        if "Detected Title" not in df.columns:
-            break # Skip chapter enrichment if column is missing
+    for title in unique_titles_list:
+        if "Detected Title" not in df.columns: break
         mask = df["Detected Title"] == title
-
-        # Check if mask selected any rows and if column exists before accessing .iloc[0]
-        if not mask.any() or "ChapterSummary" not in df.columns:
-            continue # Skip if title not found or target column doesn't exist
-
+        if not mask.any() or "ChapterSummary" not in df.columns: continue
         if not df.loc[mask, "ChapterSummary"].iloc[0] == "":
              operations_done += 1
              progress_bar.progress(min(operations_done / total_operations, 1.0))
@@ -198,29 +208,30 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
             f"Strictly return ONLY a valid JSON object with keys: 'ChapterSummary', 'ChapterOutline' (list of strings), and 'ChapterQuestions' (list of strings)."
             f"Example: {{\"ChapterSummary\": \"Summary text...\", \"ChapterOutline\": [\"Point 1\", \"Point 2\"], \"ChapterQuestions\": [\"Question 1?\", \"Question 2?\"]}}"
         )
-        content = _call_api(prompt)
+        raw_content = _call_api(prompt)
+
+        # **** ADDED CLEANING STEP ****
+        content_to_parse = clean_json_string(raw_content)
+        # ****************************
 
         result = {}
-        if content:
+        if content_to_parse: # Check if string is not empty after cleaning
             try:
-                result = json.loads(content)
+                result = json.loads(content_to_parse) # Parse the CLEANED string
                 if not isinstance(result, dict):
-                    st.warning(f"⚠️ Chapter '{title}': API returned valid JSON, but it wasn't a dictionary object. Content: '{content}'")
+                    st.warning(f"⚠️ Chapter '{title}': API returned valid JSON, but it wasn't a dictionary object. Cleaned Content: '{content_to_parse}'")
                     result = {}
             except json.JSONDecodeError as json_e:
-                st.error(f"❌ Chapter '{title}': Failed to decode JSON response from API. Error: {json_e}. Raw Content: '{content}'")
+                st.error(f"❌ Chapter '{title}': Failed to decode JSON response from API. Error: {json_e}. Cleaned Content: '{content_to_parse}'. Raw Content: '{raw_content}'")
             except Exception as e:
-                st.error(f"❌ Chapter '{title}': An unexpected error occurred processing API response: {e}. Raw Content: '{content}'")
+                st.error(f"❌ Chapter '{title}': An unexpected error occurred processing API response: {e}. Cleaned Content: '{content_to_parse}'. Raw Content: '{raw_content}'")
         else:
-            st.warning(f"⚠️ Chapter '{title}': Received empty or failed response from API.")
+            st.warning(f"⚠️ Chapter '{title}': Received empty or failed response from API, or content was only markdown fences. Raw Content: '{raw_content}'")
 
-        # Check if columns exist before assigning
-        if "ChapterSummary" in df.columns:
-            df.loc[mask, "ChapterSummary"]   = str(result.get("ChapterSummary", ""))
-        if "ChapterOutline" in df.columns:
-            df.loc[mask, "ChapterOutline"]   = json.dumps(result.get("ChapterOutline", []))
-        if "ChapterQuestions" in df.columns:
-            df.loc[mask, "ChapterQuestions"] = json.dumps(result.get("ChapterQuestions", []))
+        # ... (Assignment logic remains the same) ...
+        if "ChapterSummary" in df.columns: df.loc[mask, "ChapterSummary"]   = str(result.get("ChapterSummary", ""))
+        if "ChapterOutline" in df.columns: df.loc[mask, "ChapterOutline"]   = json.dumps(result.get("ChapterOutline", []))
+        if "ChapterQuestions" in df.columns: df.loc[mask, "ChapterQuestions"] = json.dumps(result.get("ChapterQuestions", []))
 
         operations_done += 1
         progress_bar.progress(min(operations_done / total_operations, 1.0))
@@ -229,23 +240,18 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
 
     st.info("ℹ️ Starting Chunk Enrichment...")
     # 4) Chunk‐level enrichment
-    # **** Check 'Text Chunk' exists before iterating ****
     if "Text Chunk" not in df.columns:
         st.error("❌ Cannot perform chunk enrichment because 'Text Chunk' column is missing.")
     else:
         for idx, row in df.iterrows():
-            # Check if chunk already has data (assuming 'Wisdom' column exists)
             if "Wisdom" in df.columns and not row.get("Wisdom", "") == "":
                 operations_done += 1
                 progress_bar.progress(min(operations_done / total_operations, 1.0))
                 continue
 
-            # **** CHANGED HERE: Use the exact column name 'Text Chunk' ****
             chunk = row.get("Text Chunk", "")
-            # *************************************************************
-
             if not chunk or pd.isna(chunk):
-                st.warning(f"⚠️ Skipping empty chunk at index {idx}")
+                # st.warning(f"⚠️ Skipping empty chunk at index {idx}") # Can be too verbose
                 operations_done += 1
                 progress_bar.progress(min(operations_done / total_operations, 1.0))
                 continue
@@ -260,31 +266,34 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
                  f"Strictly return ONLY a valid JSON object with keys: 'Wisdom' (string), 'Reflections' (string), 'ChunkOutline' (list of strings), and 'ChunkQuestions' (list containing ONE string question)."
                  f"Example: {{\"Wisdom\": \"Wisdom text...\", \"Reflections\": \"Reflection text...\", \"ChunkOutline\": [\"Point 1\", \"Point 2\"], \"ChunkQuestions\": [\"Question 1?\"]}}"
             )
-            content = _call_api(prompt)
+            raw_content = _call_api(prompt)
+
+            # **** ADDED CLEANING STEP ****
+            content_to_parse = clean_json_string(raw_content)
+            # ****************************
 
             result = {}
-            if content:
+            if content_to_parse: # Check if string is not empty after cleaning
                 try:
-                    result = json.loads(content)
+                    result = json.loads(content_to_parse) # Parse the CLEANED string
                     if not isinstance(result, dict):
-                         st.warning(f"⚠️ Chunk {idx}: API returned valid JSON, but it wasn't a dictionary object. Content: '{content}'")
+                         st.warning(f"⚠️ Chunk {idx}: API returned valid JSON, but it wasn't a dictionary object. Cleaned Content: '{content_to_parse}'")
                          result = {}
                 except json.JSONDecodeError as json_e:
-                    st.error(f"❌ Chunk {idx}: Failed to decode JSON response from API. Error: {json_e}. Raw Content: '{content}'")
+                    # Show cleaned and raw content in error message for better debugging
+                    st.error(f"❌ Chunk {idx}: Failed to decode JSON response from API. Error: {json_e}. Cleaned Content: '{content_to_parse}'. Raw Content: '{raw_content}'")
                 except Exception as e:
-                    st.error(f"❌ Chunk {idx}: An unexpected error occurred processing API response: {e}. Raw Content: '{content}'")
+                    st.error(f"❌ Chunk {idx}: An unexpected error occurred processing API response: {e}. Cleaned Content: '{content_to_parse}'. Raw Content: '{raw_content}'")
             else:
-                st.warning(f"⚠️ Chunk {idx}: Received empty or failed response from API.")
+                 st.warning(f"⚠️ Chunk {idx}: Received empty or failed response from API, or content was only markdown fences. Raw Content: '{raw_content}'")
 
-            # Check if columns exist before assigning
-            if "Wisdom" in df.columns:
-                df.at[idx, "Wisdom"]         = str(result.get("Wisdom", ""))
-            if "Reflections" in df.columns:
-                df.at[idx, "Reflections"]    = str(result.get("Reflections", ""))
-            if "ChunkOutline" in df.columns:
-                df.at[idx, "ChunkOutline"]   = json.dumps(result.get("ChunkOutline", []))
-            if "ChunkQuestions" in df.columns:
-                df.at[idx, "ChunkQuestions"] = json.dumps(result.get("ChunkQuestions", []))
+
+            # ... (Assignment logic remains the same) ...
+            if "Wisdom" in df.columns: df.at[idx, "Wisdom"]         = str(result.get("Wisdom", ""))
+            if "Reflections" in df.columns: df.at[idx, "Reflections"]    = str(result.get("Reflections", ""))
+            if "ChunkOutline" in df.columns: df.at[idx, "ChunkOutline"]   = json.dumps(result.get("ChunkOutline", []))
+            if "ChunkQuestions" in df.columns: df.at[idx, "ChunkQuestions"] = json.dumps(result.get("ChunkQuestions", []))
+
 
             operations_done += 1
             progress_bar.progress(min(operations_done / total_operations, 1.0))
