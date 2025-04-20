@@ -3,39 +3,95 @@ import pandas as pd
 import requests
 import json
 import streamlit as st
-import time # Import time for potential retries or delays if needed
+import time
+import chardet # Library to detect encoding
 
 def run_improvement5(uploaded_file, model_name, api_url, api_key):
     """
     Reads uploaded_file (CSV), enriches by chapter & chunk, returns DataFrame.
-    Handles potential JSON decoding errors from the API.
+    Handles potential JSON decoding errors from the API and attempts common CSV encodings.
     """
     if uploaded_file is None:
         st.warning("⚠️ No file uploaded.")
         return None
 
-    # 1) Load CSV
-    try:
-        # Explicitly specify dtype to avoid potential parsing issues with mixed types
-        # If you know specific columns might be problematic, define them here.
-        # For now, treating all as object (string) is safest for reading.
-        df = pd.read_csv(uploaded_file, dtype=object)
-        # Fill potential NaN values in critical columns with empty strings
-        df['Detected Title'] = df['Detected Title'].fillna('')
-        df['TEXT CHUNK'] = df['TEXT CHUNK'].fillna('')
+    # 1) Load CSV with robust encoding detection and error handling
+    df = None
+    potential_encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
+    detected_encoding = None
 
-    except Exception as e:
-        st.error(f"❌ Failed to read CSV: {e}")
+    try:
+        # --- Try detecting encoding first ---
+        # Read the first few KB to guess encoding - more robust for larger files
+        raw_data = uploaded_file.read(5000) # Read 5KB
+        uploaded_file.seek(0) # Reset file pointer to the beginning!
+        result = chardet.detect(raw_data)
+        detected_encoding = result['encoding']
+        if detected_encoding:
+            st.info(f"ℹ️ Detected encoding: {detected_encoding} (Confidence: {result['confidence']:.2f}). Trying this first.")
+            potential_encodings.insert(0, detected_encoding) # Prioritize detected encoding
+            # Remove duplicates if detected was already in the list
+            potential_encodings = list(dict.fromkeys(potential_encodings))
+        else:
+             st.warning("⚠️ Could not auto-detect encoding. Trying common ones.")
+
+    except Exception as detect_err:
+        st.warning(f"⚠️ Error during encoding detection: {detect_err}. Proceeding with common encodings.")
+        uploaded_file.seek(0) # Ensure file pointer is reset even if detection failed
+
+
+    # --- Try reading with potential encodings ---
+    last_exception = None
+    for encoding in potential_encodings:
+        try:
+            st.write(f"⏳ Trying to read CSV with encoding: {encoding}...")
+            # Explicitly setting delimiter and header, using object dtype
+            df = pd.read_csv(
+                uploaded_file,
+                encoding=encoding,
+                delimiter=',',    # Explicitly set comma delimiter
+                header=0,         # Explicitly state header is row 0
+                dtype=object,     # Read all as strings initially
+                on_bad_lines='warn' # Warn about problematic lines instead of erroring immediately
+            )
+            st.success(f"✅ Successfully read CSV using encoding: {encoding}")
+            last_exception = None # Clear last exception if successful
+            break # Exit loop if read is successful
+        except UnicodeDecodeError:
+            st.warning(f"⚠️ Failed to decode using {encoding}.")
+            uploaded_file.seek(0) # IMPORTANT: Reset stream position for next try
+            last_exception = f"UnicodeDecodeError with encoding '{encoding}'"
+        except pd.errors.ParserError as pe:
+            st.warning(f"⚠️ Parser error with {encoding}: {pe}")
+            uploaded_file.seek(0) # Reset stream position
+            last_exception = f"ParserError with encoding '{encoding}': {pe}"
+        except Exception as e:
+            st.warning(f"⚠️ An unexpected error occurred while reading with {encoding}: {e}")
+            uploaded_file.seek(0) # Reset stream position
+            # Store the last exception encountered
+            last_exception = e # Keep the most recent generic exception
+
+    if df is None:
+        st.error(f"❌ Failed to read CSV after trying multiple encodings. Last error encountered: {last_exception}")
+        st.error("Please ensure the file is a valid CSV and try saving it with UTF-8 encoding in your spreadsheet program (File -> Save As -> CSV UTF-8).")
         return None
+
+    # --- Post-read processing (Fill NaNs, Check Columns) ---
+    try:
+        df.fillna('', inplace=True) # Replace NaN/None with empty strings globally AFTER reading
+    except Exception as fill_e:
+         st.error(f"❌ Error during post-read NaN filling: {fill_e}")
+         return None # Stop if we can't even clean the data
 
     # --- Check if necessary columns exist ---
-    if "Detected Title" not in df.columns:
-        st.error("❌ CSV file is missing the required column: 'Detected Title'")
-        return None
-    if "TEXT CHUNK" not in df.columns:
-        st.error("❌ CSV file is missing the required column: 'TEXT CHUNK'")
+    required_columns = ["Detected Title", "TEXT CHUNK"]
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        st.error(f"❌ CSV file is missing the required column(s): {', '.join(missing_columns)}")
+        st.error(f"Detected columns are: {', '.join(df.columns)}")
         return None
     # --- End Check ---
+
 
     # 2) Initialize new columns if they don't exist
     new_cols = [
@@ -45,8 +101,8 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
     for col in new_cols:
         if col not in df.columns:
             df[col] = ""
-        # Ensure existing columns are treated as strings initially for consistency
-        df[col] = df[col].astype(str).fillna('')
+        # Ensure existing columns are treated as strings for consistency
+        df[col] = df[col].astype(str)
 
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -58,29 +114,21 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
             try:
                 # --- Google Gemini Specific Payload ---
                 if "generativelanguage.googleapis.com" in api_url:
-                    # Ensure the key is passed in the URL, not header
                     url = f"{api_url}?key={api_key}"
                     payload = json.dumps({"contents":[{"parts":[{"text": prompt}]}]})
-                    # Use standard requests POST, no special headers needed beyond Content-Type
-                    r = requests.post(url, data=payload, headers={"Content-Type": "application/json"}, timeout=90) # Increased timeout
-                # --- OpenAI‐compatible (DeepSeek, OpenAI, Anthropic) ---
-                # Note: Anthropic might need specific headers/payload structure if not using their specific SDK
+                    r = requests.post(url, data=payload, headers={"Content-Type": "application/json"}, timeout=90)
+                # --- OpenAI‐compatible ---
                 else:
                     payload = json.dumps({
                         "model": model_name,
                         "messages": [{"role": "user", "content": prompt}],
-                        # Add optional parameters if needed, e.g., max_tokens, temperature
-                        # "max_tokens": 1000
                     })
-                    r = requests.post(api_url, headers=headers, data=payload, timeout=90) # Increased timeout
+                    r = requests.post(api_url, headers=headers, data=payload, timeout=90)
 
-                # --- Check Status Code ---
-                r.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+                r.raise_for_status() # Raises HTTPError for bad responses
 
-                # --- Extract Content based on API type ---
                 response_data = r.json()
                 if "generativelanguage.googleapis.com" in api_url:
-                     # Safer access for Gemini response structure
                     if response_data.get("candidates") and \
                        len(response_data["candidates"]) > 0 and \
                        response_data["candidates"][0].get("content") and \
@@ -89,9 +137,8 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
                         return response_data["candidates"][0]["content"]["parts"][0].get("text", "").strip()
                     else:
                         st.warning(f"⚠️ Unexpected Gemini response format: {response_data}")
-                        return "" # Return empty string on unexpected format
+                        return ""
                 else: # OpenAI-compatible
-                    # Safer access for OpenAI-compatible response structure
                     if response_data.get("choices") and \
                        len(response_data["choices"]) > 0 and \
                        response_data["choices"][0].get("message") and \
@@ -99,49 +146,45 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
                          return response_data["choices"][0]["message"]["content"].strip()
                     else:
                         st.warning(f"⚠️ Unexpected OpenAI-compatible response format: {response_data}")
-                        return "" # Return empty string on unexpected format
+                        return ""
 
             except requests.exceptions.Timeout:
                 st.warning(f"⏳ API call timed out (attempt {attempt + 1}/{max_retries}). Retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ API Request Failed (attempt {attempt + 1}/{max_retries}): {e}. Raw Response: {r.text if 'r' in locals() else 'N/A'}")
-                # Don't retry on definite errors like 401 Unauthorized or 400 Bad Request immediately
                 if hasattr(e, 'response') and e.response is not None and 400 <= e.response.status_code < 500:
                      st.error(f"❌ Client-side error ({e.response.status_code}). Check API Key, Model Name, or Prompt. Stopping retries.")
-                     return "" # Return empty string, no point retrying
+                     return ""
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                 else:
                     st.error(f"❌ API Request Failed after {max_retries} attempts.")
-                    return "" # Return empty string after final failure
-            except Exception as e: # Catch other potential errors during the call
+                    return ""
+            except Exception as e:
                 st.error(f"❌ An unexpected error occurred during API call: {e}")
-                return "" # Return empty string
-
-        # If all retries fail
+                return ""
         return ""
 
 
     # --- Create a progress bar ---
-    total_operations = len(df.get("Detected Title", pd.Series()).dropna().unique()) + len(df)
+    total_operations = len(df['Detected Title'].dropna().unique()) + len(df)
     progress_bar = st.progress(0)
     operations_done = 0
 
     st.info("ℹ️ Starting Chapter Enrichment...")
     # 3) Chapter‐level enrichment
-    # Use .items() for potentially better performance if title list is huge, but unique() is fine here.
-    unique_titles = df.get("Detected Title", pd.Series()).dropna().unique()
-    for title in unique_titles:
-        if not title: # Skip empty titles if any exist
-             continue
+    unique_titles = df['Detected Title'].astype(str).dropna().unique() # Ensure titles are strings
+    unique_titles = [title for title in unique_titles if title] # Filter out empty strings
 
-        # Check if chapter already has data (simple check, assumes if one field is filled, all are)
+    for title in unique_titles:
         mask = df["Detected Title"] == title
+        # Simple check if data exists (assumes if summary is filled, all are)
+        # Use .iloc[0] because mask might select multiple rows for the same chapter
         if not df.loc[mask, "ChapterSummary"].iloc[0] == "":
-             st.write(f"⏩ Skipping already processed chapter: '{title}'")
+             # st.write(f"⏩ Skipping already processed chapter: '{title}'") # Optional verbosity
              operations_done += 1
-             progress_bar.progress(operations_done / total_operations)
+             progress_bar.progress(min(operations_done / total_operations, 1.0))
              continue
 
         st.write(f"⏳ Processing Chapter: '{title}'")
@@ -154,34 +197,27 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
         )
         content = _call_api(prompt)
 
-        result = {} # Default to empty dict
+        result = {}
         if content:
             try:
-                # Attempt to parse the JSON
                 result = json.loads(content)
-                if not isinstance(result, dict): # Ensure it's a dictionary
+                if not isinstance(result, dict):
                     st.warning(f"⚠️ Chapter '{title}': API returned valid JSON, but it wasn't a dictionary object. Content: '{content}'")
-                    result = {} # Reset if not a dict
+                    result = {}
             except json.JSONDecodeError as json_e:
-                # This is the specific error from the screenshot
                 st.error(f"❌ Chapter '{title}': Failed to decode JSON response from API. Error: {json_e}. Raw Content: '{content}'")
-                # Keep result as {}
             except Exception as e:
                 st.error(f"❌ Chapter '{title}': An unexpected error occurred processing API response: {e}. Raw Content: '{content}'")
-                # Keep result as {}
         else:
             st.warning(f"⚠️ Chapter '{title}': Received empty or failed response from API.")
-            # Keep result as {}
 
-        # Safely assign values using .get() with default values
-        df.loc[mask, "ChapterSummary"]   = str(result.get("ChapterSummary", "")) # Ensure string
-        # Ensure outlines/questions are stored as JSON strings (lists)
+        df.loc[mask, "ChapterSummary"]   = str(result.get("ChapterSummary", ""))
         df.loc[mask, "ChapterOutline"]   = json.dumps(result.get("ChapterOutline", []))
         df.loc[mask, "ChapterQuestions"] = json.dumps(result.get("ChapterQuestions", []))
 
         operations_done += 1
-        progress_bar.progress(operations_done / total_operations)
-        time.sleep(0.1) # Small delay to prevent overwhelming the API/UI
+        progress_bar.progress(min(operations_done / total_operations, 1.0))
+        time.sleep(0.1)
 
 
     st.info("ℹ️ Starting Chunk Enrichment...")
@@ -189,19 +225,19 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
     for idx, row in df.iterrows():
         # Check if chunk already has data
         if not row.get("Wisdom", "") == "":
-            # st.write(f"⏩ Skipping already processed chunk {idx}") # Optional: uncomment for verbose skipping
             operations_done += 1
-            progress_bar.progress(operations_done / total_operations)
+            progress_bar.progress(min(operations_done / total_operations, 1.0))
             continue
 
         chunk = row.get("TEXT CHUNK", "")
-        if not chunk or pd.isna(chunk): # Skip if chunk is empty or NaN
+        # Also check for NaN explicitly although fillna should have caught it
+        if not chunk or pd.isna(chunk):
             st.warning(f"⚠️ Skipping empty chunk at index {idx}")
             operations_done += 1
-            progress_bar.progress(operations_done / total_operations)
+            progress_bar.progress(min(operations_done / total_operations, 1.0))
             continue
 
-        st.write(f"⏳ Processing Chunk {idx}...")
+        # st.write(f"⏳ Processing Chunk {idx}...") # Can be too verbose, keep commented unless debugging
         prompt = (
              f"Analyze the following text chunk:\n---START CHUNK---\n{chunk}\n---END CHUNK---\n\n"
              f"Based SOLELY on this chunk, provide: \n"
@@ -214,7 +250,7 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
         )
         content = _call_api(prompt)
 
-        result = {} # Default to empty dict
+        result = {}
         if content:
             try:
                 result = json.loads(content)
@@ -228,17 +264,17 @@ def run_improvement5(uploaded_file, model_name, api_url, api_key):
         else:
             st.warning(f"⚠️ Chunk {idx}: Received empty or failed response from API.")
 
-        # Safely assign values using .get()
-        df.at[idx, "Wisdom"]         = str(result.get("Wisdom", "")) # Ensure string
-        df.at[idx, "Reflections"]    = str(result.get("Reflections", "")) # Ensure string
+        df.at[idx, "Wisdom"]         = str(result.get("Wisdom", ""))
+        df.at[idx, "Reflections"]    = str(result.get("Reflections", ""))
         df.at[idx, "ChunkOutline"]   = json.dumps(result.get("ChunkOutline", []))
         df.at[idx, "ChunkQuestions"] = json.dumps(result.get("ChunkQuestions", []))
 
         operations_done += 1
-        progress_bar.progress(min(operations_done / total_operations, 1.0)) # Ensure progress doesn't exceed 1.0
-        time.sleep(0.1) # Small delay
+        progress_bar.progress(min(operations_done / total_operations, 1.0))
+        # Reduce sleep time slightly as chunk processing is faster
+        time.sleep(0.05)
 
     st.success("✅ Enrichment process completed!")
-    progress_bar.progress(1.0) # Ensure bar reaches 100%
+    progress_bar.progress(1.0)
     return df
 # --- END OF FILE bookchunkerprocess1-main/improvement5.py ---
