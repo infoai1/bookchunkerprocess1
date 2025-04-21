@@ -8,7 +8,7 @@ import os
 # ==============================================================================
 
 # --- OpenAI GPT Configuration ---
-MODEL_NAME = os.getenv("OPENAI_MODEL", "o4-mini-2025-04-16")
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1-2025-04-14")
 API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
 
 # --- DeepSeek Configuration ---
