@@ -1,24 +1,46 @@
+# --- START OF FILE bookchunkerprocess1-main/config.py ---
 import os
 
-# OpenAI GPT
-MODEL_NAME        = os.getenv("OPENAI_MODEL",    "gpt-3.5-turbo")
-API_URL           = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
+# ==============================================================================
+# Configuration File for Chapter & Chunk Enricher
+# ==============================================================================
+# ... (Explanations remain the same) ...
+# ==============================================================================
 
-# DeepSeek Reasoner (OpenAI‑compatible)
-DEEPSEEK_MODEL    = os.getenv("DEEPSEEK_MODEL",    "deepseek-reasoner")
-DEEPSEEK_API_URL  = os.getenv("DEEPSEEK_API_URL",  "https://api.deepseek.com/v1/chat/completions")
+# --- OpenAI GPT Configuration ---
+MODEL_NAME = os.getenv("OPENAI_MODEL", "o4-mini-2025-04-16")
+API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
 
-# Anthropic Claude
-ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL",   "claude-2.5")
-ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/complete")
+# --- DeepSeek Configuration ---
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
+DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
 
-# Google Gemini Pro
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL",      "gemini-2.0-flash")
-GEMINI_API_URL    = os.getenv(
+# --- Anthropic Claude Configuration ---
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-202502197") 
+ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
+
+# --- Google Gemini Configuration ---
+# Used when you select "Google Gemini Pro" in the app
+# *** IMPORTANT: Updated to use the specific model 'gemini-2.5-pro-preview-03-25' AS REQUESTED ***
+# WARNING: This model identifier is NOT found in standard public Google API documentation.
+# Using it with the standard 'generativelanguage.googleapis.com' endpoint below
+# is VERY LIKELY TO FAIL (e.g., 404 Not Found error).
+# Ensure this model identifier is correct AND that you are using the correct API endpoint
+# if you have special access to this experimental/preview model.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-preview-03-25") # Using the specific identifier requested by the user.
+GEMINI_API_URL = os.getenv(
     "GEMINI_API_URL",
-    "https://generativelanguage.googleapis.com/v1beta2/models/gemini-2.0-flash:generateContent"
+    # This URL includes the specific '2.5' model name requested.
+    # If this URL doesn't work, the model likely requires a different base URL or access method.
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-03-25:generateContent"
 )
 
-# Embeddings (OpenAI)
-EMBEDDING_MODEL   = os.getenv("EMBEDDING_MODEL",   "text-embedding-ada-002")
+# --- Embeddings Configuration (Using OpenAI) ---
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "https://api.openai.com/v1/embeddings")
+
+# ==============================================================================
+# End of Configuration
+# ==============================================================================
+
+# --- END OF FILE bookchunkerprocess1-main/config.py ---
